@@ -58,4 +58,33 @@ function isStale(timestamp, thresholdMs) {
   return Date.now() - new Date(timestamp).getTime() > thresholdMs;
 }
 
-module.exports = { calculateDaysRequested, isNotInPast, datesOverlap, isStale };
+/**
+ * Calculate working business days between two dates, excluding weekends and public holidays.
+ *
+ * @param {string} startDate - ISO date string (YYYY-MM-DD)
+ * @param {string} endDate   - ISO date string (YYYY-MM-DD)
+ * @param {number[]} [weekendDays=[0, 6]] - Days of week treated as weekends (0=Sunday, 6=Saturday)
+ * @param {string[]} [holidays=[]] - Array of ISO holiday date strings (YYYY-MM-DD)
+ * @returns {number} Number of working days
+ */
+function calculateWorkingDays(startDate, endDate, weekendDays = [0, 6], holidays = []) {
+  const [sYear, sMonth, sDay] = startDate.split('-').map(Number);
+  const [eYear, eMonth, eDay] = endDate.split('-').map(Number);
+  let current = new Date(Date.UTC(sYear, sMonth - 1, sDay));
+  const end = new Date(Date.UTC(eYear, eMonth - 1, eDay));
+  const holidaySet = new Set(holidays);
+
+  let workingDays = 0;
+  while (current <= end) {
+    const dayOfWeek = current.getUTCDay();
+    const isoString = current.toISOString().slice(0, 10);
+    if (!weekendDays.includes(dayOfWeek) && !holidaySet.has(isoString)) {
+      workingDays++;
+    }
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return workingDays;
+}
+
+module.exports = { calculateDaysRequested, isNotInPast, datesOverlap, isStale, calculateWorkingDays };
+
