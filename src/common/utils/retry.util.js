@@ -1,9 +1,58 @@
 'use strict';
 
-/**
- * Resilient Exponential Backoff Retry with Full Jitter.
- * Decorates asynchronous external service calls with customizable backoff curves.
- */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isRetryable(error) {
+  if (error.code === 'CIRCUIT_OPEN' || error.code === 'CIRCUIT_HALF_OPEN') {
+    return false;
+  }
+  if (error.response) {
+    const status = error.response.status;
+    if (status === 429 || status === 408) return true;
+    if (status >= 400 && status < 500) return false;
+    return true; // 5xx
+  }
+  return true;
+}
+
+async function withRetry(fn, options = {}) {
+  const {
+    maxAttempts = 3,
+    baseDelayMs = 1000,
+    maxDelayMs = 10000,
+    jitter = true,
+    onRetry = null,
+  } = options;
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (error) {
+      lastError = error;
+
+      if (attempt === maxAttempts || !isRetryable(error)) {
+        throw error;
+      }
+
+      const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
+      const cappedDelay = Math.min(exponentialDelay, maxDelayMs);
+      const actualDelay = jitter
+        ? cappedDelay * (0.5 + Math.random() * 0.5)
+        : cappedDelay;
+
+      if (onRetry) {
+        onRetry(error, attempt);
+      }
+
+      await sleep(actualDelay);
+    }
+  }
+
+  throw lastError;
+}
+
 async function retryWithBackoff(fn, options = {}) {
   const maxAttempts = options.maxAttempts || 3;
   const initialDelayMs = options.initialDelayMs || 100;
@@ -24,12 +73,11 @@ async function retryWithBackoff(fn, options = {}) {
         throw err;
       }
       const baseDelay = Math.min(maxDelayMs, initialDelayMs * Math.pow(backoffFactor, attempt - 1));
-      // Full jitter: uniformly distributed between 0 and baseDelay
       const jitterDelay = Math.floor(Math.random() * baseDelay);
-      await new Promise((resolve) => setTimeout(resolve, jitterDelay));
+      await sleep(jitterDelay);
     }
   }
   throw lastError;
 }
 
-module.exports = { retryWithBackoff };
+module.exports = { withRetry, retryWithBackoff, isRetryable, sleep };

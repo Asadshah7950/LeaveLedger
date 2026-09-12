@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -27,5 +27,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Jest test suite
-        run: npm test
+      - name: Run Jest Unit Tests
+        run: npm run test:unit

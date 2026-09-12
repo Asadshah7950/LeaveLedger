@@ -1,68 +1,74 @@
 'use strict';
 
-/**
- * Circuit Breaker — protects downstream calls from cascading failure.
- *
- * Implements the standard three-state pattern:
- *
- *   CLOSED ──(N failures)──► OPEN ──(cooldown expires)──► HALF_OPEN
- *     ▲                                                       │
- *     └────────────────────(probe succeeds)───────────────────┘
- *
- * Usage:
- *   const breaker = new CircuitBreaker({ failureThreshold: 5, cooldownMs: 30_000 });
- *   const result = await breaker.call(() => externalHcmService.getEmployeeBalance(id));
- */
+const { CircuitState } = require('../constants');
 
-const STATE = Object.freeze({ CLOSED: 'CLOSED', OPEN: 'OPEN', HALF_OPEN: 'HALF_OPEN' });
+const STATE = Object.freeze({
+  CLOSED: CircuitState ? CircuitState.CLOSED : 'CLOSED',
+  OPEN: CircuitState ? CircuitState.OPEN : 'OPEN',
+  HALF_OPEN: CircuitState ? CircuitState.HALF_OPEN : 'HALF_OPEN',
+});
 
 class CircuitBreakerOpenError extends Error {
   constructor(name, cooldownRemainingMs) {
-    super(
-      `CircuitBreaker [${name}] is OPEN. Retry in ${Math.ceil(cooldownRemainingMs / 1000)}s.`
-    );
+    super(`CircuitBreaker [${name}] is OPEN. Retry in ${Math.ceil(cooldownRemainingMs / 1000)}s.`);
     this.name = 'CircuitBreakerOpenError';
     this.circuitName = name;
     this.cooldownRemainingMs = cooldownRemainingMs;
+    this.code = 'CIRCUIT_OPEN';
   }
 }
 
 class CircuitBreaker {
-  /**
-   * @param {object} options
-   * @param {string}  [options.name='default']         - Identifier for logs
-   * @param {number}  [options.failureThreshold=5]     - Consecutive failures to open
-   * @param {number}  [options.cooldownMs=30000]       - ms to stay OPEN before HALF_OPEN
-   * @param {number}  [options.timeout=10000]          - Max ms per call before treating as failure
-   * @param {Function} [options.fallback]              - Optional fn(err) to call in OPEN state
-   */
-  constructor(options = {}) {
-    this._name = options.name || 'default';
-    this._failureThreshold = options.failureThreshold ?? 5;
-    this._cooldownMs = options.cooldownMs ?? 30_000;
-    this._timeout = options.timeout ?? 10_000;
-    this._fallback = options.fallback || null;
+  constructor(arg1, arg2) {
+    if (typeof arg1 === 'function') {
+      this.fn = arg1;
+      const opts = arg2 || {};
+      this._name = opts.name || 'CircuitBreaker';
+      this.name = this._name;
+      this._failureThreshold = opts.failureThreshold ?? 5;
+      this.failureThreshold = this._failureThreshold;
+      this._cooldownMs = opts.resetTimeoutMs ?? opts.cooldownMs ?? 30000;
+      this.resetTimeoutMs = this._cooldownMs;
+      this._timeout = opts.timeout ?? 10000;
+      this._fallback = opts.fallback || null;
+    } else {
+      const opts = arg1 || {};
+      this.fn = null;
+      this._name = opts.name || 'default';
+      this.name = this._name;
+      this._failureThreshold = opts.failureThreshold ?? 5;
+      this.failureThreshold = this._failureThreshold;
+      this._cooldownMs = opts.resetTimeoutMs ?? opts.cooldownMs ?? 30000;
+      this.resetTimeoutMs = this._cooldownMs;
+      this._timeout = opts.timeout ?? 10000;
+      this._fallback = opts.fallback || null;
+    }
 
     this._state = STATE.CLOSED;
     this._failureCount = 0;
+    this._failures = 0;
     this._openedAt = null;
+    this._nextAttemptAt = null;
     this._successCount = 0;
+    this._halfOpenInFlight = false;
   }
 
   get state() { return this._state; }
   get failureCount() { return this._failureCount; }
+  get failures() { return this._failureCount; }
 
-  /**
-   * Execute an async function through the circuit breaker.
-   *
-   * @template T
-   * @param {() => Promise<T>} fn
-   * @returns {Promise<T>}
-   * @throws {CircuitBreakerOpenError} when state is OPEN and no fallback configured
-   */
-  async call(fn) {
+  async call(...args) {
+    let callFn;
+    if (typeof args[0] === 'function') {
+      callFn = args[0];
+    } else if (this.fn) {
+      callFn = () => this.fn(...args);
+    } else {
+      throw new TypeError('CircuitBreaker.call expects a function argument when no default function is bound');
+    }
+
     if (this._state === STATE.OPEN) {
-      const elapsed = Date.now() - this._openedAt;
+      const elapsed = Date.now() - (this._openedAt || (this._nextAttemptAt ? this._nextAttemptAt - this._cooldownMs : Date.now()));
       const remaining = this._cooldownMs - elapsed;
 
       if (remaining > 0) {
@@ -70,25 +76,19 @@ class CircuitBreaker {
         if (this._fallback) return this._fallback(err);
         throw err;
       }
-      // Cooldown expired — probe with HALF_OPEN
       this._state = STATE.HALF_OPEN;
     }
 
     try {
-      const result = await this._withTimeout(fn);
+      const result = await this._withTimeout(callFn);
       this._onSuccess();
       return result;
     } catch (err) {
-      this._onFailure();
+      this._onFailure(err);
       throw err;
     }
   }
 
-  /**
-   * Wrap a promise with a hard timeout.
-   * @param {Function} fn
-   * @returns {Promise}
-   */
   _withTimeout(fn) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
@@ -104,29 +104,43 @@ class CircuitBreaker {
 
   _onSuccess() {
     if (this._state === STATE.HALF_OPEN) {
-      // Probe succeeded — reset to CLOSED
       this._state = STATE.CLOSED;
       this._failureCount = 0;
+      this._failures = 0;
       this._openedAt = null;
+      this._nextAttemptAt = null;
     } else {
       this._failureCount = 0;
+      this._failures = 0;
     }
     this._successCount++;
   }
 
-  _onFailure() {
+  _onFailure(err) {
     this._failureCount++;
+    this._failures = this._failureCount;
     if (this._state === STATE.HALF_OPEN || this._failureCount >= this._failureThreshold) {
       this._state = STATE.OPEN;
       this._openedAt = Date.now();
+      this._nextAttemptAt = this._openedAt + this._cooldownMs;
     }
   }
 
-  /** Manually reset to CLOSED state (useful in tests or admin endpoints). */
   reset() {
     this._state = STATE.CLOSED;
     this._failureCount = 0;
+    this._failures = 0;
     this._openedAt = null;
+    this._nextAttemptAt = null;
+  }
+
+  getStatus() {
+    return {
+      name: this._name,
+      state: this._state,
+      failures: this._failureCount,
+      nextAttemptAt: this._nextAttemptAt ? new Date(this._nextAttemptAt).toISOString() : null,
+    };
   }
 
   toJSON() {
