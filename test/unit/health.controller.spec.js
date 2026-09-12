@@ -23,6 +23,8 @@ describe('HealthController (Unit)', () => {
     mockResponse = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      send: jest.fn().mockReturnThis(),
     };
     controller = new HealthController(mockDataSource, mockHcmService);
   });
@@ -136,5 +138,24 @@ describe('HealthController (Unit)', () => {
       );
     });
   });
+
+  describe('getMetrics', () => {
+    it('returns 200 OK with Prometheus formatted text', () => {
+      controller.getMetrics(mockResponse);
+
+      expect(mockResponse.set).toHaveBeenCalledWith(
+        'Content-Type',
+        'text/plain; version=0.0.4; charset=utf-8',
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.send).toHaveBeenCalledWith(
+        expect.stringContaining('process_uptime_seconds'),
+      );
+      expect(mockResponse.send).toHaveBeenCalledWith(
+        expect.stringContaining('process_resident_memory_bytes'),
+      );
+    });
+  });
 });
+
 
