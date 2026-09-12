@@ -1,96 +1,73 @@
 'use strict';
 
-const { CircuitBreaker } = require('../../src/common/utils/circuit-breaker.util');
-const { CircuitState } = require('../../src/common/constants');
+const { CircuitBreaker, CircuitBreakerOpenError, STATE } = require('../../src/common/utils/circuit-breaker.util');
 
 describe('CircuitBreaker (Unit)', () => {
-  beforeEach(() => {
-    jest.spyOn(console, 'info').mockImplementation(() => {});
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+  const success = () => Promise.resolve('ok');
+  const fail = () => Promise.reject(new Error('downstream error'));
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  it('stays CLOSED when failures are below threshold', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 3 });
+    await expect(cb.call(success)).resolves.toBe('ok');
+    expect(cb.state).toBe(STATE.CLOSED);
   });
 
-  afterEach(() => {
-    jest.restoreAllMocks();
+  it('opens after reaching failure threshold', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 2 });
+    await expect(cb.call(fail)).rejects.toThrow('downstream error');
+    await expect(cb.call(fail)).rejects.toThrow('downstream error');
+    expect(cb.state).toBe(STATE.OPEN);
   });
 
-  it('fast-fails with CIRCUIT_OPEN when circuit is open and reset window is not reached', async () => {
-    const breaker = new CircuitBreaker(async () => 'ok', { name: 'HCM_TEST' });
-    breaker._state = CircuitState.OPEN;
-    breaker._nextAttemptAt = Date.now() + 10_000;
-
-    await expect(breaker.call()).rejects.toMatchObject({ code: 'CIRCUIT_OPEN' });
+  it('throws CircuitBreakerOpenError when OPEN', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 1, cooldownMs: 60_000 });
+    await expect(cb.call(fail)).rejects.toThrow();
+    await expect(cb.call(success)).rejects.toBeInstanceOf(CircuitBreakerOpenError);
   });
 
-  it('transitions from OPEN to HALF_OPEN probe and closes on successful probe', async () => {
-    const fn = jest.fn().mockResolvedValue({ success: true });
-    const breaker = new CircuitBreaker(fn, { name: 'HCM_TEST' });
-
-    breaker._state = CircuitState.OPEN;
-    breaker._nextAttemptAt = Date.now() - 1;
-
-    const result = await breaker.call('payload');
-
-    expect(result).toEqual({ success: true });
-    expect(fn).toHaveBeenCalledWith('payload');
-    expect(breaker.state).toBe(CircuitState.CLOSED);
-    expect(breaker.failures).toBe(0);
-  });
-
-  it('fast-fails with CIRCUIT_HALF_OPEN when another probe is already in progress', async () => {
-    const breaker = new CircuitBreaker(async () => 'ok', { name: 'HCM_TEST' });
-    breaker._state = CircuitState.HALF_OPEN;
-    breaker._halfOpenInFlight = false;
-
-    await expect(breaker.call()).rejects.toMatchObject({ code: 'CIRCUIT_HALF_OPEN' });
-  });
-
-  it('opens circuit after reaching failure threshold while closed', async () => {
-    const fn = jest.fn().mockRejectedValue(new Error('upstream failed'));
-    const breaker = new CircuitBreaker(fn, {
-      name: 'HCM_TEST',
-      failureThreshold: 2,
-      resetTimeoutMs: 5000,
+  it('calls fallback when configured and OPEN', async () => {
+    const cb = new CircuitBreaker({
+      name: 'test',
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+      fallback: () => 'fallback-value',
     });
-
-    await expect(breaker.call()).rejects.toThrow('upstream failed');
-    expect(breaker.state).toBe(CircuitState.CLOSED);
-
-    await expect(breaker.call()).rejects.toThrow('upstream failed');
-    expect(breaker.state).toBe(CircuitState.OPEN);
-    expect(breaker.failures).toBe(2);
-    expect(typeof breaker._nextAttemptAt).toBe('number');
+    await expect(cb.call(fail)).rejects.toThrow();
+    const result = await cb.call(success);
+    expect(result).toBe('fallback-value');
   });
 
-  it('re-opens immediately when HALF_OPEN probe fails', async () => {
-    const fn = jest.fn().mockRejectedValue(new Error('still down'));
-    const breaker = new CircuitBreaker(fn, {
-      name: 'HCM_TEST',
-      failureThreshold: 5,
-      resetTimeoutMs: 5000,
-    });
-
-    breaker._state = CircuitState.HALF_OPEN;
-    breaker._halfOpenInFlight = true;
-
-    await expect(breaker.call()).rejects.toThrow('still down');
-    expect(breaker.state).toBe(CircuitState.OPEN);
+  it('transitions to HALF_OPEN after cooldown expires', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 1, cooldownMs: 10 });
+    await expect(cb.call(fail)).rejects.toThrow();
+    expect(cb.state).toBe(STATE.OPEN);
+    await delay(20);
+    // The next call should try HALF_OPEN probe
+    await expect(cb.call(success)).resolves.toBe('ok');
+    expect(cb.state).toBe(STATE.CLOSED);
   });
 
-  it('reset clears circuit state and getStatus serializes nextAttemptAt safely', () => {
-    const breaker = new CircuitBreaker(async () => 'ok', { name: 'HCM_TEST' });
-    breaker._state = CircuitState.OPEN;
-    breaker._failures = 3;
-    breaker._nextAttemptAt = Date.now() + 1000;
+  it('re-opens if HALF_OPEN probe fails', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 1, cooldownMs: 10 });
+    await expect(cb.call(fail)).rejects.toThrow();
+    await delay(20);
+    await expect(cb.call(fail)).rejects.toThrow();
+    expect(cb.state).toBe(STATE.OPEN);
+  });
 
-    const before = breaker.getStatus();
-    expect(before.state).toBe(CircuitState.OPEN);
-    expect(typeof before.nextAttemptAt).toBe('string');
+  it('reset() clears failure count and restores CLOSED', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 1, cooldownMs: 60_000 });
+    await expect(cb.call(fail)).rejects.toThrow();
+    expect(cb.state).toBe(STATE.OPEN);
+    cb.reset();
+    expect(cb.state).toBe(STATE.CLOSED);
+    expect(cb.failureCount).toBe(0);
+  });
 
-    breaker.reset();
-    const after = breaker.getStatus();
-
-    expect(after.state).toBe(CircuitState.CLOSED);
-    expect(after.failures).toBe(0);
-    expect(after.nextAttemptAt).toBeNull();
+  it('rejects on timeout', async () => {
+    const cb = new CircuitBreaker({ name: 'test', timeout: 10 });
+    const slowFn = () => new Promise((r) => setTimeout(r, 100));
+    await expect(cb.call(slowFn)).rejects.toThrow('timed out');
   });
 });
