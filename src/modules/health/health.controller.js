@@ -48,6 +48,33 @@ class HealthController {
     });
   }
 
+  @Get('metrics')
+  getMetrics(res) {
+    const mem = process.memoryUsage();
+    const uptime = Math.floor(process.uptime());
+    const payload = [
+      '# HELP process_uptime_seconds Process uptime in seconds.',
+      '# TYPE process_uptime_seconds gauge',
+      `process_uptime_seconds ${uptime}`,
+      '',
+      '# HELP process_resident_memory_bytes Resident memory size in bytes.',
+      '# TYPE process_resident_memory_bytes gauge',
+      `process_resident_memory_bytes ${mem.rss}`,
+      '',
+      '# HELP process_heap_bytes Process heap bytes.',
+      '# TYPE process_heap_bytes gauge',
+      `process_heap_bytes ${mem.heapUsed}`,
+      '',
+      '# HELP process_heap_total_bytes Process heap total bytes.',
+      '# TYPE process_heap_total_bytes gauge',
+      `process_heap_total_bytes ${mem.heapTotal}`,
+      '',
+    ].join('\n');
+
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    return res.status(HttpStatus.OK).send(payload);
+  }
+
   @Get()
   async getHealth(res) {
     let dbStatus = 'UP';
@@ -106,6 +133,7 @@ class HealthController {
 Res()(HealthController.prototype, 'getHealth', 0);
 Res()(HealthController.prototype, 'getLiveness', 0);
 Res()(HealthController.prototype, 'getReadiness', 0);
+Res()(HealthController.prototype, 'getMetrics', 0);
 Inject(DataSource)(HealthController, undefined, 0);
 Inject(HcmService)(HealthController, undefined, 1);
 
