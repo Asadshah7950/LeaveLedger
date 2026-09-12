@@ -15,9 +15,12 @@ class LoggingInterceptor {
     const req = context.switchToHttp().getRequest();
     const res = context.switchToHttp().getResponse();
 
-    const requestId = req.headers['x-request-id'] || uuidv4();
+    const requestId = req.headers['x-request-id'] || req.headers['x-correlation-id'] || uuidv4();
+    const correlationId = req.headers['x-correlation-id'] || requestId;
     req.requestId = requestId;
+    req.correlationId = correlationId;
     res.setHeader('X-Request-ID', requestId);
+    res.setHeader('X-Correlation-ID', correlationId);
 
     const startMs = Date.now();
     const { method, url } = req;
