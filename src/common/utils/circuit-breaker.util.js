@@ -1,123 +1,142 @@
 'use strict';
 
-const { CircuitState } = require('../constants');
-
 /**
- * CircuitBreaker — prevents cascading failures to external services (HCM).
+ * Circuit Breaker — protects downstream calls from cascading failure.
  *
- * States:
- *   CLOSED  — normal operation; all requests pass through
- *   OPEN    — failures exceeded threshold; reject fast without calling HCM
- *   HALF_OPEN — one probe request allowed; if it succeeds → CLOSED, else → OPEN
+ * Implements the standard three-state pattern:
  *
- * Design decision: We use a time-based reset (not attempt-based) because HCM
- * outages are typically duration-bounded. A 30s reset is short enough to recover
- * quickly but long enough not to hammer a degraded HCM.
+ *   CLOSED ──(N failures)──► OPEN ──(cooldown expires)──► HALF_OPEN
+ *     ▲                                                       │
+ *     └────────────────────(probe succeeds)───────────────────┘
+ *
+ * Usage:
+ *   const breaker = new CircuitBreaker({ failureThreshold: 5, cooldownMs: 30_000 });
+ *   const result = await breaker.call(() => externalHcmService.getEmployeeBalance(id));
  */
+
+const STATE = Object.freeze({ CLOSED: 'CLOSED', OPEN: 'OPEN', HALF_OPEN: 'HALF_OPEN' });
+
+class CircuitBreakerOpenError extends Error {
+  constructor(name, cooldownRemainingMs) {
+    super(
+      `CircuitBreaker [${name}] is OPEN. Retry in ${Math.ceil(cooldownRemainingMs / 1000)}s.`
+    );
+    this.name = 'CircuitBreakerOpenError';
+    this.circuitName = name;
+    this.cooldownRemainingMs = cooldownRemainingMs;
+  }
+}
+
 class CircuitBreaker {
   /**
-   * @param {Function} fn - The async function to protect
    * @param {object} options
-   * @param {number} options.failureThreshold - Failures before opening circuit
-   * @param {number} options.resetTimeoutMs - Time before probing from OPEN state
-   * @param {string} options.name - Name for logging
+   * @param {string}  [options.name='default']         - Identifier for logs
+   * @param {number}  [options.failureThreshold=5]     - Consecutive failures to open
+   * @param {number}  [options.cooldownMs=30000]       - ms to stay OPEN before HALF_OPEN
+   * @param {number}  [options.timeout=10000]          - Max ms per call before treating as failure
+   * @param {Function} [options.fallback]              - Optional fn(err) to call in OPEN state
    */
-  constructor(fn, options = {}) {
-    this.fn = fn;
-    this.failureThreshold = options.failureThreshold || 5;
-    this.resetTimeoutMs = options.resetTimeoutMs || 30000;
-    this.name = options.name || 'CircuitBreaker';
+  constructor(options = {}) {
+    this._name = options.name || 'default';
+    this._failureThreshold = options.failureThreshold ?? 5;
+    this._cooldownMs = options.cooldownMs ?? 30_000;
+    this._timeout = options.timeout ?? 10_000;
+    this._fallback = options.fallback || null;
 
-    this._state = CircuitState.CLOSED;
-    this._failures = 0;
-    this._nextAttemptAt = null;
-    this._halfOpenInFlight = false;
+    this._state = STATE.CLOSED;
+    this._failureCount = 0;
+    this._openedAt = null;
+    this._successCount = 0;
   }
 
-  get state() {
-    return this._state;
-  }
-
-  get failures() {
-    return this._failures;
-  }
+  get state() { return this._state; }
+  get failureCount() { return this._failureCount; }
 
   /**
-   * Execute the protected function.
-   * @throws {Error} immediately if circuit is OPEN and reset timeout not elapsed
+   * Execute an async function through the circuit breaker.
+   *
+   * @template T
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   * @throws {CircuitBreakerOpenError} when state is OPEN and no fallback configured
    */
-  async call(...args) {
-    if (this._state === CircuitState.OPEN) {
-      if (Date.now() < this._nextAttemptAt) {
-        const err = new Error(`[${this.name}] Circuit OPEN — fast fail`);
-        err.code = 'CIRCUIT_OPEN';
+  async call(fn) {
+    if (this._state === STATE.OPEN) {
+      const elapsed = Date.now() - this._openedAt;
+      const remaining = this._cooldownMs - elapsed;
+
+      if (remaining > 0) {
+        const err = new CircuitBreakerOpenError(this._name, remaining);
+        if (this._fallback) return this._fallback(err);
         throw err;
       }
-      // Transition to HALF_OPEN for probe
-      this._state = CircuitState.HALF_OPEN;
-      this._halfOpenInFlight = true;
-    }
-
-    if (this._state === CircuitState.HALF_OPEN && this._halfOpenInFlight === false) {
-      // Another half-open probe is waiting — fast fail secondary requests
-      const err = new Error(`[${this.name}] Circuit HALF_OPEN — probe in progress`);
-      err.code = 'CIRCUIT_HALF_OPEN';
-      throw err;
+      // Cooldown expired — probe with HALF_OPEN
+      this._state = STATE.HALF_OPEN;
     }
 
     try {
-      const result = await this.fn(...args);
+      const result = await this._withTimeout(fn);
       this._onSuccess();
       return result;
-    } catch (error) {
-      this._onFailure(error);
-      throw error;
+    } catch (err) {
+      this._onFailure();
+      throw err;
     }
+  }
+
+  /**
+   * Wrap a promise with a hard timeout.
+   * @param {Function} fn
+   * @returns {Promise}
+   */
+  _withTimeout(fn) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`CircuitBreaker [${this._name}] call timed out after ${this._timeout}ms`)),
+        this._timeout
+      );
+      Promise.resolve()
+        .then(() => fn())
+        .then((val) => { clearTimeout(timer); resolve(val); })
+        .catch((err) => { clearTimeout(timer); reject(err); });
+    });
   }
 
   _onSuccess() {
-    this._failures = 0;
-    this._halfOpenInFlight = false;
-    if (this._state !== CircuitState.CLOSED) {
-      console.info(`[${this.name}] Circuit CLOSED — service recovered`);
+    if (this._state === STATE.HALF_OPEN) {
+      // Probe succeeded — reset to CLOSED
+      this._state = STATE.CLOSED;
+      this._failureCount = 0;
+      this._openedAt = null;
+    } else {
+      this._failureCount = 0;
     }
-    this._state = CircuitState.CLOSED;
+    this._successCount++;
   }
 
-  _onFailure(error) {
-    this._halfOpenInFlight = false;
-    this._failures += 1;
-
-    if (
-      this._state === CircuitState.HALF_OPEN ||
-      this._failures >= this.failureThreshold
-    ) {
-      this._state = CircuitState.OPEN;
-      this._nextAttemptAt = Date.now() + this.resetTimeoutMs;
-      console.error(
-        `[${this.name}] Circuit OPEN — failures: ${this._failures}, ` +
-          `resets at: ${new Date(this._nextAttemptAt).toISOString()}. Error: ${error.message}`,
-      );
+  _onFailure() {
+    this._failureCount++;
+    if (this._state === STATE.HALF_OPEN || this._failureCount >= this._failureThreshold) {
+      this._state = STATE.OPEN;
+      this._openedAt = Date.now();
     }
   }
 
+  /** Manually reset to CLOSED state (useful in tests or admin endpoints). */
   reset() {
-    this._state = CircuitState.CLOSED;
-    this._failures = 0;
-    this._nextAttemptAt = null;
-    this._halfOpenInFlight = false;
+    this._state = STATE.CLOSED;
+    this._failureCount = 0;
+    this._openedAt = null;
   }
 
-  getStatus() {
+  toJSON() {
     return {
-      name: this.name,
+      name: this._name,
       state: this._state,
-      failures: this._failures,
-      nextAttemptAt: this._nextAttemptAt
-        ? new Date(this._nextAttemptAt).toISOString()
-        : null,
+      failureCount: this._failureCount,
+      openedAt: this._openedAt,
     };
   }
 }
 
-module.exports = { CircuitBreaker };
+module.exports = { CircuitBreaker, CircuitBreakerOpenError, STATE };
