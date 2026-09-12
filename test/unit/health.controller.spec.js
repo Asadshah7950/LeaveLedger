@@ -77,4 +77,64 @@ describe('HealthController (Unit)', () => {
       }),
     );
   });
+
+  describe('getLiveness', () => {
+    it('returns 200 OK with status UP and uptimeSeconds', () => {
+      controller.getLiveness(mockResponse);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'UP',
+          uptimeSeconds: expect.any(Number),
+          timestamp: expect.any(String),
+        }),
+      );
+    });
+  });
+
+  describe('getReadiness', () => {
+    it('returns 200 OK with READY when database is initialized and responsive', async () => {
+      await controller.getReadiness(mockResponse);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'UP',
+          database: 'READY',
+        }),
+      );
+    });
+
+    it('returns 503 SERVICE_UNAVAILABLE when database is not initialized', async () => {
+      mockDataSource.isInitialized = false;
+
+      await controller.getReadiness(mockResponse);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(503);
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'DOWN',
+          database: 'UNAVAILABLE',
+          error: 'Database connection is not initialized',
+        }),
+      );
+    });
+
+    it('returns 503 SERVICE_UNAVAILABLE when database query throws error', async () => {
+      mockDataSource.query.mockRejectedValue(new Error('Connection lost'));
+
+      await controller.getReadiness(mockResponse);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(503);
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'DOWN',
+          database: 'UNAVAILABLE',
+          error: 'Connection lost',
+        }),
+      );
+    });
+  });
 });
+
