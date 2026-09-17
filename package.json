@@ -11,7 +11,8 @@
     "test:unit": "node -r @babel/register ./node_modules/jest/bin/jest.js --testPathPattern=\"test/unit\" --runInBand --forceExit",
     "test:integration": "node -r @babel/register ./node_modules/jest/bin/jest.js --testPathPattern=\"test/integration\" --runInBand --forceExit",
     "test:e2e": "node -r @babel/register ./node_modules/jest/bin/jest.js --testPathPattern=\"test/e2e\" --runInBand --forceExit",
-    "test:coverage": "node -r @babel/register ./node_modules/jest/bin/jest.js --coverage --runInBand --forceExit"
+    "test:coverage": "node -r @babel/register ./node_modules/jest/bin/jest.js --coverage --runInBand --forceExit",
+    "test:benchmark": "node -r @babel/register benchmarks/concurrency_benchmark.js"
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",

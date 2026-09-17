@@ -231,6 +231,37 @@ npm run start:dev
 
 ---
 
+
+
+---
+
+## 8. Verification & Performance Benchmarks
+
+LeaveLedger features complete test coverage across unit, integration, e2e, and real-time concurrency stress benchmarks:
+
+`ash
+# 1. Run full test suite (195/195 tests passing - 100% green)
+npm test
+
+# 2. Run high-concurrency stress benchmark harness
+npm run test:benchmark
+
+# 3. Generate test coverage report
+npm run test:coverage
+`
+
+---
+
+## 9. Extended Engineering Specifications
+
+- 🏛️ **[Deep Architecture & Concurrency Proofs](docs/ARCHITECTURE.md)**: Detailed isolation level semantics, two-phase balance reservations, and transactional outbox patterns.
+- 📋 **[REST API Specification](docs/API_SPECIFICATION.md)**: RFC 7807 problem details, idempotency headers, and payload schemas.
+- ⚡ **[High-Concurrency Stress Benchmark Suite](benchmarks/README.md)**: Benchmark methodologies, throughput metrics, and latency distribution profiles.
+- 🛡️ **[Security Audit Report](SECURITY_AUDIT.md)**: In-depth STRIDE threat modeling, RBAC validation, and cryptographic audit chainer proofs.
+- 📐 **[Technical Requirements Document (TRD)](TRD.md)**: Comprehensive business requirements, domain entities, and sequence specifications.
+
+---
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
