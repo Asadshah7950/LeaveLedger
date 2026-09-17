@@ -1,7 +1,7 @@
 {
-  "name": "timeoff-service",
+  "name": "leave-ledger",
   "version": "1.0.0",
-  "description": "Production-grade Time-Off Microservice with HCM sync, idempotency, and concurrency control",
+  "description": "Production-grade, concurrency-safe leave & balance ledger engine built with NestJS, TypeScript, ACID transactions, idempotent mutations, and resilient HCM sync",
   "main": "src/main.js",
   "scripts": {
     "start": "node -r @babel/register src/main.js",

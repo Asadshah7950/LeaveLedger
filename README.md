@@ -1,13 +1,14 @@
-# Resilient Time-Off Microservice: Architecture & Concurrency Case Study
+# LeaveLedger: Enterprise Leave & Balance Ledger Engine
 
-[![CI](https://github.com/Asadshah7950/time-off-microservice/actions/workflows/ci.yml/badge.svg)](https://github.com/Asadshah7950/time-off-microservice/actions/workflows/ci.yml)
+[![CI](https://github.com/Asadshah7950/LeaveLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/Asadshah7950/LeaveLedger/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Asadshah7950/LeaveLedger?color=8957e5&label=Release)](https://github.com/Asadshah7950/LeaveLedger/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![NestJS](https://img.shields.io/badge/NestJS-10.x-E0234E?logo=nestjs)](https://nestjs.com)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs)](https://nodejs.org)
 [![Testing](https://img.shields.io/badge/Tests-100%25%20Passing-brightgreen?logo=jest)](https://jestjs.io)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](Dockerfile)
 
-A production-engineered NestJS time-off microservice designed to solve the **dual-write problem**, **concurrency race conditions**, and **upstream HCM (Human Capital Management) instability** through idempotent writes, strict balance invariants, and circuit-broken eventual consistency.
+A production-engineered NestJS leave & balance ledger engine designed to solve the **dual-write problem**, **concurrency race conditions**, and **upstream HCM (Human Capital Management) instability** through idempotent writes, strict balance invariants, and circuit-broken eventual consistency.
 
 ---
 
